@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Red Meteorológica - 4 Estaciones</title>
+  <!-- Chart.js y el adaptador de tiempo -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3/index.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #eef2f5; padding: 20px; margin: 0; }
+    h1 { text-align: center; color: #1e293b; margin-bottom: 5px; }
+    .estado { text-align: center; margin-bottom: 15px; font-weight: bold; font-size: 14px; }
+    .en-linea { color: #16a34a; }
+    .desconectado { color: #dc2626; }
+
+    .controles {
+      max-width: 1200px; margin: 0 auto 15px; display: flex; flex-wrap: wrap;
+      gap: 10px; align-items: center; justify-content: center;
+      background: white; padding: 12px; border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    .controles button, .controles select, .controles input {
+      padding: 8px 14px; border-radius: 8px; border: 1px solid #cbd5e1;
+      background: #f8fafc; cursor: pointer; font-size: 14px;
+    }
+    .controles button.activo { background: #3b82f6; color: white; border-color: #3b82f6; }
+    .controles button:hover:not(.activo) { background: #e2e8f0; }
+    .controles .btn-descarga { background: #16a34a; color: white; border-color: #16a34a; }
+    .controles .btn-descarga:hover { background: #15803d; }
+    
+    .chip-dias {
+      display: flex; flex-wrap: wrap; gap: 6px; max-width: 1200px; margin: 0 auto 15px;
+      background: white; padding: 10px; border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    .chip-dias label {
+      font-size: 13px; padding: 5px 10px; border-radius: 20px;
+      background: #f1f5f9; cursor: pointer; user-select: none;
+      border: 1px solid #e2e8f0;
+    }
+    .chip-dias input { display: none; }
+    .chip-dias label:has(input:checked) { background: #dbeafe; border-color: #3b82f6; font-weight: bold; }
+
+    .grid-graficos { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; margin: auto; }
+    .card { background: white; padding: 15px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .card h2 { font-size: 16px; text-align: center; color: #475569; margin-top: 0; margin-bottom: 15px; }
+    canvas { width: 100% !important; height: 300px !important; }
+
+    #vista-tabla { display: none; max-width: 1200px; margin: auto; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { background: #f1f5f9; position: sticky; top: 0; }
+    tr:hover td { background: #f8fafc; }
+
+    .oculto { display: none !important; }
+    @media (max-width: 800px) { .grid-graficos { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>📡Semillero de Metrología Científica e Industrial</h1>
+  <div id="estado-conexion" class="estado desconectado">Conectando a Supabase...</div>
+
+  <div class="controles">
+    <button id="btn-vista-hoy" class="activo">📅 Hoy</button>
+    <button id="btn-vista-comparar">📊 Comparar</button>
+    <button id="btn-vista-todo">📈 Histórico</button>
+    <button id="btn-vista-tabla">📋 Tabla</button>
+    
+    <select id="selector-rango" title="Rango de tiempo">
+      <option value="todo">Todo el día / Histórico</option>
+      <option value="6h">Últimas 6 horas</option>
+      <option value="12h">Últimas 12 horas</option>
+      <option value="24h">Últimas 24 horas</option>
+      <option value="custom">Filtro por horas...</option>
+    </select>
+
+    <select id="selector-nodos" multiple size="1" title="Filtrar nodos"></select>
+    <button id="btn-descargar" class="btn-descarga">🔒 Descargar reporte</button>
+  </div>
+
+  <div id="filtro-custom" class="controles oculto" style="padding: 10px;">
+    <label style="font-size: 13px;">Desde: <input type="time" id="hora-desde" value="00:00"></label>
+    <label style="font-size: 13px;">Hasta: <input type="time" id="hora-hasta" value="23:59"></label>
+    <button id="btn-aplicar-custom" style="padding: 4px 10px; font-size: 12px; background: #3b82f6; color: white;">Aplicar</button>
+  </div>
+
+  <div id="chip-dias" class="chip-dias oculto"></div>
+
+  <div id="vista-graficos" class="grid-graficos">
+    <div class="card"><h2>💧 Humedad Relativa del Aire (%)</h2><canvas id="chartHumAire"></canvas></div>
+    <div class="card"><h2>🌡️ Temperatura Aire (°C)</h2><canvas id="chartTempAire"></canvas></div>
+    <div class="card"><h2>🌱 Humedad Relativa del Suelo (%)</h2><canvas id="chartHumSuelo"></canvas></div>
+    <div class="card"><h2>🌡️ Temperatura Suelo (°C)</h2><canvas id="chartTempSuelo"></canvas></div>
+  </div>
+
+  <div id="vista-tabla">
+    <h2 style="text-align:center;color:#475569;margin-top:0;">📋 Datos registrados</h2>
+    <table id="tabla-datos">
+      <thead>
+        <tr>
+          <th>Fecha/Hora</th><th>Nodo</th><th>Temp Aire</th>
+          <th>Hum Aire</th><th>Hum Suelo</th><th>Temp Suelo</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    // ============================================================
+    // 🔑 CONFIGURACIÓN
+    // ============================================================
+    const SUPABASE_URL = 'https://jmtyexmgsmxxaqimcaex.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_X1kOlI8fQ7DvanIfI7GXCw_aTEOF2OS';
+    const PASSWORD_DESCARGA = 'TeamRodallega1';
+    const MAX_REGISTROS_HISTORIAL = 2000;
+
+    const clienteSupabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const COLORES_NODOS = {
+      0: { border: 'rgba(153, 102, 255, 1)', bg: 'rgba(153, 102, 255, 0.1)', nombre: 'Central (N0)' },
+      1: { border: 'rgba(255, 99, 132, 1)', bg: 'rgba(255, 99, 132, 0.1)', nombre: 'Estación N1' },
+      2: { border: 'rgba(54, 162, 235, 1)', bg: 'rgba(54, 162, 235, 0.1)', nombre: 'Estación N2' },
+      3: { border: 'rgba(75, 192, 192, 1)', bg: 'rgba(75, 192, 192, 0.1)', nombre: 'Estación N3' }
+    };
+
+    // ============================================================
+    // ESTADO GLOBAL
+    // ============================================================
+    let datosEnMemoria = [];
+    let vistaActual = 'hoy';
+    let diasSeleccionados = new Set();
+    let nodosVisibles = new Set([0, 1, 2, 3]);
+    let rangoTiempo = 'todo'; 
+    let filtroCustom = { desde: '00:00', hasta: '23:59' };
+
+    // ============================================================
+    // UTILIDADES DE FECHA
+    // ============================================================
+    function diaLocal(fecha) {
+      const d = new Date(fecha);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+    function hoyLocal() { return diaLocal(new Date()); }
+
+    function horaAMinutos(horaStr) {
+      const [h, m] = horaStr.split(':').map(Number);
+      return h * 60 + m;
+    }
+
+    function dentroDelRango(fecha) {
+      const d = new Date(fecha);
+      const ahora = new Date();
+
+      if (rangoTiempo === '6h')  return (ahora - d) <= 6 * 3600 * 1000;
+      if (rangoTiempo === '12h') return (ahora - d) <= 12 * 3600 * 1000;
+      if (rangoTiempo === '24h') return (ahora - d) <= 24 * 3600 * 1000;
+
+      if (rangoTiempo === 'custom') {
+        const minDato = d.getHours() * 60 + d.getMinutes();
+        const minDesde = horaAMinutos(filtroCustom.desde);
+        const minHasta = horaAMinutos(filtroCustom.hasta);
+        if (minDesde <= minHasta) return minDato >= minDesde && minDato <= minHasta;
+        return minDato >= minDesde || minDato <= minHasta;
+      }
+      return true;
+    }
+
+    // ============================================================
+    // GRÁFICOS
+    // ============================================================
+    function crearGrafico(ctx, titulo, ejeY) {
+      return new Chart(ctx, {
+        type: 'line',
+        data: { datasets: [] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 0 },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  if (!context.length) return '';
+                  return new Date(context[0].parsed.x).toLocaleString();
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              type: 'time',
+              time: { unit: 'minute', displayFormats: { minute: 'HH:mm', hour: 'HH:mm' }, tooltipFormat: 'dd/MM HH:mm:ss' },
+              ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }
+            },
+            y: { beginAtZero: false, title: { display: true, text: ejeY.title } }
+          }
+        }
+      });
+    }
+
+    const gTempAire = crearGrafico(document.getElementById('chartTempAire'), 'Temp Aire', { title: '°C' });
+    const gHumAire = crearGrafico(document.getElementById('chartHumAire'), 'Hum Aire', { title: '%' });
+    const gHumSuelo = crearGrafico(document.getElementById('chartHumSuelo'), 'Hum Suelo', { title: '%' });
+    const gTempSuelo = crearGrafico(document.getElementById('chartTempSuelo'), 'Temp Suelo', { title: '°C' });
+    const graficos = [gTempAire, gHumAire, gHumSuelo, gTempSuelo];
+
+    function camposPorGrafico(d) {
+      return { gTempAire: d.temperatura_aire, gHumAire: d.humedad_aire, gHumSuelo: d.humedad_suelo, gTempSuelo: d.temperatura_suelo };
+    }
+
+    // ============================================================
+    // RENDERIZADO
+    // ============================================================
+    function renderPorNodo(filtroDia) {
+      graficos.forEach(g => g.data.datasets = []);
+
+      [0, 1, 2, 3].forEach(nodoId => {
+        if (!nodosVisibles.has(nodoId)) return;
+        const color = COLORES_NODOS[nodoId];
+        
+        const datos = datosEnMemoria
+          .filter(d => d.nodo_id === nodoId)
+          .filter(d => !filtroDia || diaLocal(d.fecha_hora || d.recibido_en) === filtroDia)
+          .filter(d => dentroDelRango(d.fecha_hora || d.recibido_en)) 
+          .sort((a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora));
+
+        ['gTempAire', 'gHumAire', 'gHumSuelo', 'gTempSuelo'].forEach((key, i) => {
+          const puntos = [];
+          let ultimo = null;
+          
+          datos.forEach(d => {
+            const x = new Date(d.fecha_hora || d.recibido_en);
+            const y = camposPorGrafico(d)[key];
+            if (y == null) return;
+            if (ultimo && (x - ultimo) / 60000 > 15) puntos.push({ x: new Date(ultimo.getTime() + 1), y: null });
+            puntos.push({ x, y });
+            ultimo = x;
+          });
+          
+          graficos[i].data.datasets.push({
+            label: color.nombre,
+            data: puntos,
+            borderColor: color.border,
+            backgroundColor: color.bg,
+            borderWidth: 2.5,
+            tension: 0.3,
+            pointRadius: 2,
+            fill: false,
+            spanGaps: false
+          });
+        });
+      });
+
+      graficos.forEach(g => g.update('none'));
+    }
+
+    function renderComparar() {
+      graficos.forEach(g => g.data.datasets = []);
+      const dias = [...diasSeleccionados].sort();
+      
+      dias.forEach((dia, idxDia) => {
+        const esReciente = (idxDia === dias.length - 1);
+        const opacidad = esReciente ? 1 : 0.5;
+        
+        [0, 1, 2, 3].forEach(nodoId => {
+          if (!nodosVisibles.has(nodoId)) return;
+          
+          const datos = datosEnMemoria
+            .filter(d => d.nodo_id === nodoId && diaLocal(d.fecha_hora || d.recibido_en) === dia)
+            .filter(d => dentroDelRango(d.fecha_hora || d.recibido_en))
+            .sort((a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora));
+            
+          if (datos.length === 0) return;
+
+          const colorNodo = COLORES_NODOS[nodoId];
+          const borderColor = colorNodo.border.replace('1)', `${opacidad})`);
+          const bgColor = colorNodo.bg.replace('0.1)', `${opacidad * 0.5})`);
+
+          ['gTempAire', 'gHumAire', 'gHumSuelo', 'gTempSuelo'].forEach((key, i) => {
+            const puntos = datos
+              .map(d => ({ x: new Date(d.fecha_hora || d.recibido_en), y: camposPorGrafico(d)[key] }))
+              .filter(p => p.y != null);
+            if (puntos.length === 0) return;
+
+            graficos[i].data.datasets.push({
+              label: `${dia} - ${colorNodo.nombre}`,
+              data: puntos,
+              borderColor: borderColor,
+              backgroundColor: bgColor,
+              borderWidth: esReciente ? 2.5 : 1.5,
+              borderDash: esReciente ? [] : [6, 4],
+              tension: 0.3,
+              pointRadius: 1.5,
+              fill: false
+            });
+          });
+        });
+      });
+
+      graficos.forEach(g => g.update('none'));
+    }
+
+    function renderTabla() {
+      const tbody = document.querySelector('#tabla-datos tbody');
+      tbody.innerHTML = '';
+      const datos = [...datosEnMemoria]
+        .filter(d => dentroDelRango(d.fecha_hora || d.recibido_en))
+        .sort((a, b) => new Date(b.fecha_hora) - new Date(a.fecha_hora));
+        
+      const frag = document.createDocumentFragment();
+      datos.forEach(d => {
+        if (!nodosVisibles.has(d.nodo_id)) return;
+        const tr = document.createElement('tr');
+        const f = new Date(d.fecha_hora || d.recibido_en).toLocaleString();
+        tr.innerHTML = `
+          <td>${f}</td>
+          <td>N${d.nodo_id}</td>
+          <td>${d.temperatura_aire ?? '-'}</td>
+          <td>${d.humedad_aire ?? '-'}</td>
+          <td>${d.humedad_suelo ?? '-'}</td>
+          <td>${d.temperatura_suelo ?? '-'}</td>`;
+        frag.appendChild(tr);
+      });
+      tbody.appendChild(frag);
+    }
+
+    // ============================================================
+    // SUPABASE
+    // ============================================================
+    async function cargarDatosIniciales() {
+      const { data, error } = await clienteSupabase
+        .from('mediciones')
+        .select('*')
+        .order('fecha_hora', { ascending: true })
+        .limit(MAX_REGISTROS_HISTORIAL);
+
+      if (error) { console.error('Error cargando datos:', error); return; }
+
+      datosEnMemoria = data || [];
+      actualizarChipsDias();
+      aplicarVista();
+      document.getElementById('estado-conexion').textContent = '🟢 Conectado en vivo';
+      document.getElementById('estado-conexion').className = 'estado en-linea';
+    }
+
+    function conectarRealtime() {
+      clienteSupabase.channel('cambios-mediciones')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'mediciones' },
+          (payload) => {
+            datosEnMemoria.push(payload.new);
+            actualizarChipsDias();
+            if (vistaActual === 'tabla') renderTabla();
+            else aplicarVista();
+          })
+        .subscribe((status) => {
+          if (status !== 'SUBSCRIBED') {
+            document.getElementById('estado-conexion').textContent = '🔴 Reconectando...';
+            document.getElementById('estado-conexion').className = 'estado desconectado';
+          } else {
+            document.getElementById('estado-conexion').textContent = '🟢 Conectado en vivo';
+            document.getElementById('estado-conexion').className = 'estado en-linea';
+          }
+        });
+    }
+
+    function actualizarChipsDias() {
+      const cont = document.getElementById('chip-dias');
+      const dias = [...new Set(datosEnMemoria.map(d => diaLocal(d.fecha_hora || d.recibido_en)))].sort().reverse();
+      if (diasSeleccionados.size === 0) dias.slice(0, 2).forEach(d => diasSeleccionados.add(d));
+
+      cont.innerHTML = '';
+      dias.forEach(dia => {
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = diasSeleccionados.has(dia);
+        input.onchange = () => {
+          input.checked ? diasSeleccionados.add(dia) : diasSeleccionados.delete(dia);
+          if (vistaActual === 'comparar') renderComparar();
+        };
+        const span = document.createElement('span');
+        span.textContent = dia;
+        label.append(input, span);
+        cont.appendChild(label);
+      });
+    }
+
+    // ============================================================
+    // VISTAS Y CONTROLES
+    // ============================================================
+    function aplicarVista() {
+      const vistaGraficos = document.getElementById('vista-graficos');
+      const vistaTabla = document.getElementById('vista-tabla');
+      const chipDias = document.getElementById('chip-dias');
+      const selectorRango = document.getElementById('selector-rango');
+
+      vistaGraficos.classList.toggle('oculto', vistaActual === 'tabla');
+      vistaTabla.style.display = vistaActual === 'tabla' ? 'block' : 'none';
+      chipDias.classList.toggle('oculto', vistaActual !== 'comparar');
+      selectorRango.style.display = (vistaActual === 'comparar' || vistaActual === 'hoy' || vistaActual === 'todo') ? 'block' : 'none';
+
+      if (vistaActual === 'hoy') renderPorNodo(hoyLocal());
+      else if (vistaActual === 'todo') renderPorNodo(null);
+      else if (vistaActual === 'comparar') renderComparar();
+      else if (vistaActual === 'tabla') renderTabla();
+
+      ['hoy','comparar','todo','tabla'].forEach(v => {
+        document.getElementById('btn-vista-' + v).classList.toggle('activo', vistaActual === v);
+      });
+    }
+
+    ['hoy','comparar','todo','tabla'].forEach(v => {
+      document.getElementById('btn-vista-' + v).onclick = () => {
+        vistaActual = v;
+        aplicarVista();
+      };
+    });
+
+    document.getElementById('selector-rango').onchange = (e) => {
+      rangoTiempo = e.target.value;
+      const customDiv = document.getElementById('filtro-custom');
+      if (rangoTiempo === 'custom') customDiv.classList.remove('oculto');
+      else { customDiv.classList.add('oculto'); aplicarVista(); }
+    };
+
+    document.getElementById('btn-aplicar-custom').onclick = () => {
+      filtroCustom.desde = document.getElementById('hora-desde').value;
+      filtroCustom.hasta = document.getElementById('hora-hasta').value;
+      aplicarVista();
+    };
+
+    const selectorNodos = document.getElementById('selector-nodos');
+    [0,1,2,3].forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = COLORES_NODOS[id].nombre;
+      opt.selected = true;
+      selectorNodos.appendChild(opt);
+    });
+    selectorNodos.size = 4;
+    selectorNodos.onchange = () => {
+      nodosVisibles = new Set([...selectorNodos.selectedOptions].map(o => parseInt(o.value)));
+      aplicarVista();
+    };
+
+    // ============================================================
+    // DESCARGA SEGURA (CSV + IMÁGENES DE ALTA CALIDAD CON TÍTULO)
+    // ============================================================
+    function descargarArchivo(nombre, contenido, tipo) {
+      const blob = new Blob([contenido], { type: tipo });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = nombre;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function generarCSV() {
+      const filas = [['fecha_hora','nodo_id','temperatura_aire','humedad_aire','humedad_suelo','temperatura_suelo']];
+      datosEnMemoria
+        .filter(d => nodosVisibles.has(d.nodo_id))
+        .filter(d => dentroDelRango(d.fecha_hora || d.recibido_en))
+        .sort((a, b) => new Date(a.fecha_hora) - new Date(b.fecha_hora))
+        .forEach(d => filas.push([
+          d.fecha_hora || d.recibido_en || '',
+          d.nodo_id,
+          d.temperatura_aire ?? '',
+          d.humedad_aire ?? '',
+          d.humedad_suelo ?? '',
+          d.temperatura_suelo ?? ''
+        ]));
+      return filas.map(f => f.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    }
+
+    // Exporta un gráfico a PNG de alta resolución con:
+    //   - Encabezado del semillero
+    //   - Título principal
+    //   - Subtítulo (fecha/rango)
+    //   - Gráfico
+    //   - Pie de página (puntos y timestamp)
+    function exportarGraficoConTitulo(grafico, titulo, subtitulo, infoPie, escala = 3) {
+      const canvasOriginal = grafico.canvas;
+      const anchoLogico = canvasOriginal.clientWidth || canvasOriginal.width || 800;
+      const altoLogico  = canvasOriginal.clientHeight || canvasOriginal.height || 300;
+      const anchoBase = Math.max(anchoLogico, 800);
+
+      const padding    = 20 * escala;
+      const altoHeader = 38 * escala;
+      const altoTitulo = 34 * escala;
+      const altoSubtit = 24 * escala;
+      const altoPie    = 24 * escala;
+      const separator  = 10 * escala;
+
+      const anchoFinal  = anchoBase * escala;
+      const altoGrafico = altoLogico * escala;
+
+      const anchoLienzo = anchoFinal + padding * 2;
+      const altoLienzo  = padding + altoHeader + separator + altoTitulo + altoSubtit + altoGrafico + separator + altoPie + padding;
+
+      const lienzo = document.createElement('canvas');
+      lienzo.width  = anchoLienzo;
+      lienzo.height = altoLienzo;
+
+      const ctx = lienzo.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      // Fondo blanco
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, anchoLienzo, altoLienzo);
+
+      // Encabezado
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, 0, anchoLienzo, altoHeader);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${14 * escala}px 'Segoe UI', Tahoma, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('📡 Semillero de Metrología Científica e Industrial', padding, altoHeader / 2);
+
+      ctx.textAlign = 'right';
+      ctx.font = `${11 * escala}px 'Segoe UI', Tahoma, sans-serif`;
+      ctx.fillText('Red Meteorológica · 4 Estaciones', anchoLienzo - padding, altoHeader / 2);
+
+      // Título
+      let y = altoHeader + separator + padding / 2;
+      ctx.fillStyle = '#0f172a';
+      ctx.font = `bold ${20 * escala}px 'Segoe UI', Tahoma, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(titulo, anchoLienzo / 2, y + altoTitulo / 2);
+
+      // Subtítulo
+      y += altoTitulo;
+      if (subtitulo) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = `${12 * escala}px 'Segoe UI', Tahoma, sans-serif`;
+        ctx.fillText(subtitulo, anchoLienzo / 2, y + altoSubtit / 2);
+      }
+      y += altoSubtit;
+
+      // Marco del gráfico
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.lineWidth = 1 * escala;
+      ctx.strokeRect(padding, y, anchoFinal, altoGrafico);
+
+      // Gráfico escalado
+      ctx.drawImage(
+        canvasOriginal,
+        0, 0, canvasOriginal.width, canvasOriginal.height,
+        padding, y, anchoFinal, altoGrafico
+      );
+      y += altoGrafico + separator;
+
+      // Pie
+      if (infoPie) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = `${10 * escala}px 'Segoe UI', Tahoma, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(infoPie, padding, y + altoPie / 2);
+        ctx.textAlign = 'right';
+        ctx.fillText(`Generado: ${new Date().toLocaleString()}`, anchoLienzo - padding, y + altoPie / 2);
+      }
+
+      return lienzo.toDataURL('image/png');
+    }
+
+    async function descargarReporte() {
+      const pass = prompt('🔒 Contraseña para descargar el reporte:');
+      if (pass === null) return;
+      if (pass !== PASSWORD_DESCARGA) { alert('❌ Contraseña incorrecta'); return; }
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+      // 1) CSV
+      descargarArchivo(
+        `datos_meteorologicos_${timestamp}.csv`,
+        generarCSV(),
+        'text/csv;charset=utf-8;'
+      );
+      await new Promise(r => setTimeout(r, 300));
+
+      // 2) Texto del rango
+      const rangoTexto = {
+        'todo': 'Todo el día / Histórico',
+        '6h':   'Últimas 6 horas',
+        '12h':  'Últimas 12 horas',
+        '24h':  'Últimas 24 horas',
+        'custom': `Desde ${filtroCustom.desde} hasta ${filtroCustom.hasta}`
+      }[rangoTiempo] || rangoTiempo;
+
+      const subtitulo = `Rango: ${rangoTexto}  ·  Vista: ${vistaActual}`;
+
+      // 3) Imágenes
+      const graficosParaExportar = [
+        { key: 'humedad_aire',      g: gHumAire,   titulo: 'Humedad Relativa del Aire (%)' },
+        { key: 'temperatura_aire',  g: gTempAire,  titulo: 'Temperatura Aire (°C)' },
+        { key: 'humedad_suelo',     g: gHumSuelo,  titulo: 'Humedad Relativa del Suelo (%)' },
+        { key: 'temperatura_suelo', g: gTempSuelo, titulo: 'Temperatura Suelo (°C)' }
+      ];
+
+      for (const item of graficosParaExportar) {
+        item.g.resize();
+        item.g.update('none');
+        await new Promise(r => setTimeout(r, 120));
+
+        const totalPuntos = (item.g.data.datasets || [])
+          .reduce((acc, ds) => acc + (ds.data?.length || 0), 0);
+        const infoPie = `Puntos graficados: ${totalPuntos}  ·  Nodos visibles: ${[...nodosVisibles].join(', ') || 'ninguno'}`;
+
+        const dataURL = exportarGraficoConTitulo(
+          item.g,
+          item.titulo,
+          subtitulo,
+          infoPie,
+          3
+        );
+
+        const a = document.createElement('a');
+        a.href = dataURL;
+        a.download = `grafico_${item.key}_${timestamp}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        await new Promise(r => setTimeout(r, 250));
+      }
+
+      alert('✅ Descarga completada');
+    }
+    document.getElementById('btn-descargar').onclick = descargarReporte;
+
+    // ============================================================
+    // INICIALIZACIÓN
+    // ============================================================
+    cargarDatosIniciales();
+    conectarRealtime();
+  </script>
+</body>
+</html>
